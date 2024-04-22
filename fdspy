@@ -1,0 +1,673 @@
+#!/usr/bin/env sh
+
+# Copyright 2024 Johannes Wüller <johanneswueller@gmail.com>
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; If not, see <http://www.gnu.org/licenses/>.
+
+FDSPY_VERSION="0.2.7"
+
+# This is mostly based on the Google Shell Style Guide.
+# See: https://google.github.io/styleguide/shellguide.html
+#
+# Deviations to make up for POSIX `sh` limitations, since the style guide is
+# geared towards `bash`:
+#
+# - Functions are prefixed with `fdspy_` to avoid name clashes.
+# - Variables with "local" semantics are prefixed with `_`, to avoid most name
+#   clashes and to show intent.
+
+fdspy_version_brief() {
+  printf "%s" "\
+fdspy $FDSPY_VERSION - capture writes of running processes on-the-fly
+Copyright 2024 Johannes Wüller <johanneswueller@gmail.com>
+https://github.com/jwueller/fdspy
+"
+}
+
+fdspy_version_full() {
+  fdspy_version_brief
+  printf '\nRunning on:\n\n'
+  /usr/bin/env sh --version
+}
+
+fdspy_help() {
+  fdspy_version_brief
+  printf "%s" "\
+
+Usage:
+  $(basename "$0") [<options>] [--] <pid>...
+
+General options:
+  -h, --help       Show this help message and exit.
+  --version        Show version information and exit; displays only the number
+                   if --quiet.
+  --dry-run        Print commands without executing them, also enables via
+                   FDSPY_DRY_RUN environment variable.
+  --               Marks the end of options and the start of PIDs and suppresses
+                   errors when no PIDs are specified. Recommended for use with
+                   tools like pidof/pgrep for dynamic process selection.
+
+Write selectors:
+  Captures any writes matching one or more of the specified selectors. Defaults
+  to capturing stdout if no explicit ones are specified.
+
+  --stdio          Capture writes to stdout and stderr (alias for --fd 1,2).
+  --stdout         Capture writes to stdout (default if no explicit selection).
+  --stderr         Capture writes to stderr (alias for --fd 2).
+  --fd <fd>        Capture writes to specified file descriptors; accepts a
+                   comma-separated list, specifiable multiple times. Use '*' to
+                   capture writes to any file descriptor.
+  --path <path>    Capture writes to the specified file, specifiable multiple
+                   times.
+  --forks          Capture writes from forked processes (default).
+  --ignore-forks   Capture only main process writes.
+
+Output filters:
+  Ignores writes matching one or more of the specified filters. Note that
+  filters are applied after capture, so use fewer selectors if possible.
+
+  --ignore-stdio   Ignore writes to stdout and stderr (alias for
+                   --ignore-fd 1,2).
+  --ignore-stdout  Ignore writes to stdout (alias for --ignore-fd 1).
+  --ignore-stderr  Ignore writes to stderr (alias for --ignore-fd 2).
+  --ignore-fd <fd> Ignore writes to the specified file descriptors; accepts a
+                   comma-separated list, specifiable multiple times.
+
+Output options:
+  -q, --quiet      Suppress non-error status messages to stderr.
+  -v, --verbose    Print all status messages to stderr.
+  -x <encoding>    Output encoding for captured writes; defaults to raw.
+  -z, -0, --null   Print a NUL character after each write instead of a line
+                   break. Does nothing with --encoding raw.
+
+Output encodings:
+  raw              Dump the data exactly as written (default). Does not
+                   separate individual writes.
+  hex              Encode every write as a line of space-separated octets in
+                   hexadecimal format.
+  c                Encode every write with C-style string escape sequences
+                   (excluding surrounding quotes).
+  posix            Encode every write with POSIX printf %b style string escape
+                   sequences (excluding surrounding quotes).
+
+Examples:
+  # Captures writes to stdout (default) from process 1234.
+  fdspy 1234
+
+  # Captures writes to both stdout and stderr from process 1234.
+  fdspy --stdio 1234
+
+  # Captures writes to '/tmp/output.log' by process 1234.
+  fdspy --path /tmp/output.log 1234
+
+  # Captures stdout (default selection) from all processes named 'rsync' using
+  # pgrep for dynamic PID discovery.
+  fdspy -- \$(pgrep rsync)
+
+Note:
+  Running fdspy multiple times with different options allows for targeted
+  monitoring of specific activities or separate logs for different outputs.
+
+This is free software; you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+"
+}
+
+# Unfortunately, `sh` does not provide a decent way to build a command that
+# natively preserves paths in their entirety, so we have to fall back on
+# quoting those.
+fdspy_quote_argument() {
+  printf "'"
+  printf "%s" "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+# Returns whether the given argument is a non-negative integer.
+fdspy_is_non_negative_integer() {
+  case "$1" in
+    "" | *[!0-9]*)
+      return 1
+      ;;
+
+    *)
+      return 0
+      ;;
+  esac
+}
+
+# Validates and flattens any number of comma or `$IFS` separated non-negative
+# integer arguments into a normalized space-separated list.
+fdspy_merge_non_negative_integers() {
+  _original_opts="$(set +o)"
+  set -f # globbing could mess us up
+
+  _original_IFS="$IFS"
+  IFS="$_original_IFS,"
+
+  _invalid_encountered=
+  _flattened=""
+  for _arg in "$@"; do
+    for _item in $_arg; do
+      if fdspy_is_non_negative_integer "$_item"; then
+        if [ -z "$_flattened" ]; then
+          _flattened="$_item"
+        else
+          _flattened="$_flattened $_item"
+        fi
+      else
+        echo "fdspy: expected non-negative integer: $_item" >&2
+        _invalid_encountered=1
+      fi
+    done
+  done
+
+  IFS="$_original_IFS"
+  eval "$_original_opts"
+
+  if [ -n "$_invalid_encountered" ]; then
+    return 64 # EX_USAGE
+  else
+    echo "$_flattened"
+  fi
+}
+
+# Extracts writes from an `strace` output stream and converts them to a more
+# convenient format for further processing. Each write record corresponds to a
+# separate line, with the following space-separated columns:
+#
+# 1. The file descriptor the data was written to as a non-negative integer.
+# 2. The written data as a C-style string literal (excluding surrounding quotes)
+#    representing the written data. Since line breaks are encoded as `\n` in
+#    C-style string literals, they do not cause problems with the line-based
+#    write processing.
+fdspy_parse_strace_writes() {
+  # Example of `strace` output we may have to deal with:
+  #
+  # ```
+  # 3836326 write(1, "2024-04-22T20:35:16 CEST\n", 25) = 25
+  # 3836326 +++ exited with 0 +++
+  # 3829954 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=3836326, si_uid=1000, si_status=0, si_utime=0, si_stime=0} ---
+  # [pid 118628] sendto(3, "\123", 1, 0, {sa_family=0x2, sin_port="\x00\x00", sin_addr="\x01\x01\x01\x01"}, 16) = 1
+  # ```
+  #
+  # Here is what we do:
+  #
+  # 1. Ignore the leading PID. It's not clear what exactly determines whether
+  #    it's in `%d` or `[pid %d]` format, but we just ignore all of those.
+  # 2. Extract the string literal from the write call. The output of strace is,
+  #    by design, very C-like. It shows write as a function call with a known
+  #    signature, so we can locate the C-string literal using that format.
+  #
+  # TODO: Verify that the output is not truncated by checking for the ellipsis
+  #       that strace appends to truncated output.
+  sed -un \
+    -e 's/^[0-9]\+ //' \
+    -e 's/^\[pid [0-9]\+\] //' \
+    -e '/^write(\([0-9]\+\), "\(.*\)"\(...\)\{0,1\}, [0-9]\+) = [0-9]\+$/ { s//\1 \2/p; d }' \
+    -e '/^send(\([0-9]\+\), "\(.*\)"\(...\)\{0,1\}, [0-9]\+, [0-9]\+) = [0-9]\+$/ { s//\1 \2/p; d }' \
+    -e '/^sendto(\([0-9]\+\), "\(.*\)"\(...\)\{0,1\}, [0-9]\+, [0-9]\+, {[^}]*}, [0-9]\+) = [0-9]\+$/ { s//\1 \2/p; d }'
+}
+
+# Filters out write records based on the specified file descriptor arguments.
+# Behavior is undefined if passed anything but non-negative integers!
+fdspy_filter_writes_by_fds() {
+  _filter_command="sed -un"
+
+  # Add expressions to ignore all passed-on file descriptor lines.
+  _filter_required=
+  for _fd in "$@"; do
+    _filter_required=1
+    _filter_command="$_filter_command -e '/^$_fd /d'"
+  done
+
+  # Print all lines that pass the filter.
+  _filter_command="$_filter_command -e 'p'"
+
+  if [ -z "$_filter_required" ]; then
+    cat # no-op
+  else
+    eval "$_filter_command"
+  fi
+}
+
+# Converts a write record to a C-style string literal (excluding surrounding
+# quotes).
+fdspy_unpack_write_c_literals() {
+  # The record begins with the written-to file descriptor number, so we just
+  # have to remove that.
+  sed -u 's/^\([0-9]\+\) //'
+}
+
+# Translates from C-style string literals and their escape sequences to POSIX
+# `printf %b` compatible ones.
+fdspy_c_literals_to_posix_printf() {
+  # POSIX `printf %b` is very close to C-style literals, but not quite the same.
+  # Here are the known differences we deal with:
+  #
+  # - Octal escape sequences require a leading zero (e.g. "\123" -> "\0123"),
+  #   while C doesn't allow them. Technically, we wouldn't have to convert '\0'
+  #   to '\00', but it's simpler to just pad all octal escape sequences, and
+  #   it's just as valid.
+  # - Some characters can be validly escaped in C string literals, but not in
+  #   POSIX `printf %b`: `\%`, `\"`, `\'`, and `\?`. So we just strip the
+  #   backslash and make them regular characters.
+  sed -u \
+    -e 's/\\\([0-9]\{1,3\}\)/\\0\1/g' \
+    -e 's/\\\([%"'\''?]\)/\1/g'
+}
+
+# Translates from POSIX `printf %b` style string literals and their escape
+# sequences to the data they represent.
+fdspy_posix_printf_to_raw() {
+  while IFS= read -r _line; do
+    printf '%b' "$_line"
+  done
+}
+
+# Translates from POSIX `printf %b` style string literals and their escape
+# sequences to a space-separated, byte-by-byte hex dump of the data represent.
+fdspy_posix_printf_to_hex() {
+  while IFS= read -r _line; do
+    # It's important to keep the entire hexdump on one line, so the line-by-line
+    # processing doesn't break.
+    printf '%b' "$_line" | od -w2147483647 -A n -t x1 -v
+  done | sed -u -e 's/^ //g'
+}
+
+fdspy() {
+  # TODO: Add a limit for the number of writes to capture, and exit cleanly afterwards.
+
+  _positional_arguments_explicit=
+  _output_encoding="raw"
+  _nul_terminated=
+
+  # Positive is more verbose, negative is less verbose.
+  _verbosity=0
+
+  _dry_run="$FDSPY_DRY_RUN"
+  _ignore_forks=
+  _version_requested=
+  _help_requested=
+
+  _sanitized_ignored_fds=
+  _ignore_fds() {
+    _sanitized_ignored_fds="$(fdspy_merge_non_negative_integers "$_sanitized_ignored_fds" "$@")"
+    # TODO: Optimization: We could additionally remove the ignored FDs from the selection list.
+    # TODO: Would we want to re-add FDs that were specified again after being ignored?
+  }
+
+  _sanitized_pids=
+  _add_pids() {
+    _sanitized_pids="$(fdspy_merge_non_negative_integers "$_sanitized_pids" "$@")"
+  }
+
+  _fds_wildcard=
+  _sanitized_fds=
+  _add_fds() {
+    for _arg in "$@"; do
+      # If a wildcard literal is used at any point, we can just turn off file
+      # descriptor selection entirely.
+      case "$_arg" in
+        *\**)
+          _fds_wildcard=1
+
+          # We could also break here, but this way we can keep validating the
+          # following arguments for correctness.
+          continue
+          ;;
+      esac
+
+      _sanitized_fds="$(fdspy_merge_non_negative_integers "$_sanitized_fds" "$_arg")"
+      _exit_code="$?"
+      if [ "$_exit_code" -ne 0 ]; then
+        return "$_exit_code"
+      fi
+    done
+  }
+
+  # Build the paths directly as arguments to strace, since that's easier to deal
+  # with compared to handling escaped strings in POSIX `sh`.
+  _strace_path_args=
+  _add_path() {
+    _strace_path_args="$_strace_path_args -P $(fdspy_quote_argument "$1")"
+  }
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+
+      #
+      # general options
+      #
+
+      -h | --help | -\?)
+        _help_requested=1
+        shift
+        ;;
+
+      --version)
+        _version_requested=1
+        shift
+        ;;
+
+      --dry-run)
+        _dry_run=1
+        shift
+        ;;
+
+      --)
+        _positional_arguments_explicit=1
+        shift
+        break # done with options
+        ;;
+
+      #
+      # write selectors
+      #
+
+      --fd)
+        shift
+        if ! _add_fds "$1"; then
+          return 64 # EX_USAGE
+        fi
+        shift
+        ;;
+
+      --stdio)
+        _add_fds 1 2
+        shift
+        ;;
+
+      --stdout)
+        _add_fds 1
+        shift
+        ;;
+
+      --stderr)
+        _add_fds 2
+        shift
+        ;;
+
+      --path)
+        shift
+        if ! _add_path "$1"; then
+          return 64 # EX_USAGE
+        fi
+        shift
+        ;;
+
+      --forks)
+        _ignore_forks=
+        shift
+        ;;
+
+      --ignore-forks)
+        _ignore_forks=1
+        shift
+        ;;
+
+      #
+      # output filters
+      #
+
+      --ignore-fd)
+        shift
+        _ignore_fds "$1"
+        shift
+        ;;
+
+      --ignore-stdio)
+        _ignore_fds 1 2
+        shift
+        ;;
+
+      --ignore-stdout)
+        _ignore_fds 1
+        shift
+        ;;
+
+      --ignore-stderr)
+        _ignore_fds 2
+        shift
+        ;;
+
+      #
+      # output options
+      #
+
+      -q | --quiet)
+        # Resets prior verbose mode.
+        _verbosity="$((_verbosity > 0 ? -1 : _verbosity - 1))"
+        shift
+        ;;
+
+      -v | --verbose)
+        # Resets prior quiet mode.
+        _verbosity="$((_verbosity < 0 ? 1 : _verbosity + 1))"
+        shift
+        ;;
+
+      -x)
+        shift
+        case "$1" in
+          raw | hex | c | posix)
+            _output_encoding="$1"
+            ;;
+
+          *)
+            echo "fdspy: unexpected output encoding: $1" >&2
+            exit 64 # EX_USAGE
+            ;;
+        esac
+        shift
+        ;;
+
+      -z | -0 | --null)
+        _nul_terminated=1
+        shift
+        ;;
+
+      #
+      # none of the above
+      #
+
+      -*)
+        echo "fdspy: unknown option: $1" >&2
+        return 64 # EX_USAGE
+        ;;
+
+      *)
+        # assume positional
+        if ! _add_pids "$1"; then
+          return 64 # EX_USAGE
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  # Handle remaining positional arguments.
+  while [ "$#" -gt 0 ]; do
+    if ! _add_pids "$1"; then
+      return 64 # EX_USAGE
+    fi
+    shift
+  done
+
+  # Add default selection if no others are specified.
+  if [ -z "$_sanitized_fds" ] && [ -z "$_strace_path_args" ]; then
+    _add_fds 1
+  fi
+
+  #
+  # miscellaneous actions
+  #
+
+  if [ -n "$_version_requested" ]; then
+    if [ "$_verbosity" -lt 0 ]; then
+      echo "$FDSPY_VERSION"
+    else
+      fdspy_version_full
+    fi
+
+    return 0
+  fi
+
+  if [ -n "$_help_requested" ]; then
+    fdspy_help
+    return 0
+  fi
+
+  if [ -z "$_sanitized_pids" ]; then
+    # There is nothing to monitor here!
+
+    # If we positional arguments are explicit, this is likely an expected case,
+    # so we just exit normally (e.g. `fdspy -- $(pidof might-not-exist)`).
+    if [ -n "$_positional_arguments_explicit" ]; then
+      return 0
+    fi
+
+    fdspy_help >&2
+    return 64 # EX_USAGE
+  fi
+
+  #
+  # build trace
+  #
+
+  _strace="strace -p $(printf '%s' "$_sanitized_pids" | tr ' ' ',')"
+
+  # Follow child processes.
+  if [ -z "$_ignore_forks" ]; then
+    _strace="$_strace -f"
+  fi
+
+  # Add file descriptors. Wildcard behavior is the `strace` default, so we don't
+  # have to do anything for those.
+  if [ -z "$_fds_wildcard" ] && [ -n "$_sanitized_fds" ]; then
+    _strace="$_strace -e fd=$(echo "$_sanitized_fds" | tr ' ' ',')"
+  fi
+
+  # Add paths.
+  _strace="$_strace$_strace_path_args"
+
+  # Print unabbreviated versions of the system calls. This doesn't seem to be
+  # necessary for the write system call, but it seems like a good show of
+  # intent.
+  _strace="$_strace -v"
+
+  # Write the output to stdout. This is necessary because we only want to
+  # process the actual trace output, not any of the status messages that might
+  # be written to stderr.
+  _strace="$_strace -o /dev/stdout"
+
+  # Only allow successful write system calls on stdout.
+  _strace="$_strace -e t=write,send,sendto -e s=none -z"
+
+  # This forces strace to print plain values instead of interpretin them as
+  # named constants and flags, which is a nice way to reduce the variance our
+  # syscall pattern matching has to deal with.
+  _strace="$_strace -X raw"
+
+  # Do our best to not have strace truncate the output. We want the entire
+  # thing. POSIX says the theoretical maximum is `SSIZE_MAX`, but strace won't
+  # accept a value that high.
+  _strace="$_strace -s 1000000000"
+
+  # Only print status messages when explicitly requested.
+  #
+  # Start out with the status types that should be suppressed, even with
+  # verbosity, because they go to stdout, which should only have writes.
+  _strace_quiet="exit,superseded"
+  if [ "$_verbosity" -le 0 ]; then
+    # Suppress everything explicitly, so it replaces the default.
+    _strace_quiet="all"
+  fi
+  _strace="$_strace -e q=$_strace_quiet"
+
+  #
+  # run trace
+  #
+
+  if [ -n "$_dry_run" ] || [ "$_verbosity" -gt 0 ]; then
+    echo "fdspy: $_strace" >&2
+  fi
+
+  if [ -z "$_dry_run" ]; then
+    # Since nothing like `-e pipefail` or `$PIPESTATUS` exists in POSIX-land, we
+    # have to side-channel the exit status of `strace` around the pipe and
+    # insert it back at the end.
+    { {
+      {
+        {
+          eval "$_strace"
+          echo "$?" >&3 # save strace exit code
+        } | fdspy_parse_strace_writes | {
+          # We actually want to allow word splitting here, since the file
+          # descriptors have been validated already.
+          #
+          # shellcheck disable=SC2086
+          fdspy_filter_writes_by_fds $_sanitized_ignored_fds
+        } | case "$_output_encoding" in
+          raw)
+            fdspy_unpack_write_c_literals \
+              | fdspy_c_literals_to_posix_printf \
+              | fdspy_posix_printf_to_raw
+            ;;
+
+          hex)
+            fdspy_unpack_write_c_literals \
+              | fdspy_c_literals_to_posix_printf \
+              | fdspy_posix_printf_to_hex
+            ;;
+
+          c)
+            fdspy_unpack_write_c_literals
+            ;;
+
+          posix)
+            fdspy_unpack_write_c_literals \
+              | fdspy_c_literals_to_posix_printf
+            ;;
+
+          *)
+            # This should have been caught at validation time, so this
+            # is a fatal error.
+            echo "fdspy: fatal: unexpected output encoding: $_output_encoding" >&2
+            exit 70 # EX_SOFTWARE
+            ;;
+        esac | {
+          # Convert output to NUL-terminated, if requested and applicable.
+          #
+          # Note that this doesn't make sense for raw encoding, because it does
+          # not insert any write terminators to preserve data integrity.
+          if [ -n "$_nul_terminated" ] && [ "$_output_encoding" != "raw" ]; then
+            while IFS= read -r _line; do
+              printf '%s\0' "$_line"
+            done
+          else
+            cat # no-op
+          fi
+        } >&4 # save pipe stdout
+      } 3>&1  # restore `strace` exit code
+    } | {
+      read -r _exit_code
+      return "$_exit_code"
+    }; } 4>&1 # restore pipe stdout
+  fi
+}
+
+# Provide a way to not run the entry point, particularly during testing.
+if [ -z "$FDSPY_DISABLE" ] && [ -z "$__SOURCED__" ]; then
+  fdspy "$@"
+fi
