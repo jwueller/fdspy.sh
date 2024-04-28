@@ -504,7 +504,10 @@ fdspy() {
     shift
   done
 
-  # Add default selection if no others are specified.
+  #
+  # defaults
+  #
+
   if [ -z "$_sanitized_fds" ] && [ -z "$_strace_path_args" ]; then
     _add_fds 1
   fi
@@ -531,8 +534,8 @@ fdspy() {
   if [ -z "$_sanitized_pids" ]; then
     # There is nothing to monitor here!
 
-    # If we positional arguments are explicit, this is likely an expected case,
-    # so we just exit normally (e.g. `fdspy -- $(pidof might-not-exist)`).
+    # If positional arguments are explicit, this is likely an expected case, so
+    # we just exit normally (e.g. `fdspy -- $(pidof might-not-exist)`).
     if [ -n "$_positional_arguments_explicit" ]; then
       return 0
     fi
