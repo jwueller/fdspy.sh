@@ -102,7 +102,7 @@ fdspy 1337 -x posix
 
 ## Versioning
 
-This project uses [Semantic Versioning](https://semver.org/), so you can expect a new release to indicate backwards-incompatible changes with a new major version number, although those will be avoided if at all possible. Documentation or formatting changes without user-facing impact will not trigger a new version.
+This project uses [Semantic Versioning](https://semver.org/), so you can expect a new release to indicate backwards-incompatible changes with a new major version number, although those will be avoided if at all possible. Documentation, test or formatting changes without user-facing impact will not trigger a new version.
 
 ## License
 
