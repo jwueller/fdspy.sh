@@ -100,6 +100,10 @@ fdspy 1337 -x posix
 # => \01Hello, fdspy!\n
 ```
 
+## Versioning
+
+This project uses [Semantic Versioning](https://semver.org/), so you can expect a new release to indicate backwards-incompatible changes with a new major version number, although those will be avoided if at all possible. Documentation or formatting changes without user-facing impact will not trigger a new version.
+
 ## License
 
 Copyright 2024 Johannes Wüller <johanneswueller@gmail.com>
