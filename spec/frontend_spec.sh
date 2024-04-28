@@ -7,6 +7,7 @@ Describe 'frontend'
     When call fdspy
     The stderr should include 'Usage:'
     The status should be failure
+    The status should equal 64 # EX_USAGE
   End
 
   Describe '--help'

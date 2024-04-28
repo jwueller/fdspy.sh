@@ -32,6 +32,7 @@ Describe 'fdspy_merge_non_negative_integers'
     When call fdspy_merge_non_negative_integers '-1'
     The stderr should include 'expected non-negative integer: -1'
     The status should be failure
+    The status should equal 64 # EX_USAGE
   End
 
   It 'should accept comma-separated integers'
@@ -43,11 +44,13 @@ Describe 'fdspy_merge_non_negative_integers'
     When call fdspy_merge_non_negative_integers '1,-2,3'
     The stderr should include 'expected non-negative integer: -2'
     The status should be failure
+    The status should equal 64 # EX_USAGE
   End
 
   It 'should fail gracefully on glob attempts'
     When call fdspy_merge_non_negative_integers '*'
     The stderr should include 'expected non-negative integer: *'
     The status should be failure
+    The status should equal 64 # EX_USAGE
   End
 End
