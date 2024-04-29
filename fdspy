@@ -46,7 +46,7 @@ fdspy_help() {
   printf "%s" "\
 
 Usage:
-  $(basename "$0") [<options>] [--] <pid>...
+  $(basename -- "$0") [<options>] [--] <pid>...
 
 General options:
   -h, --help       Show this help message and exit.
