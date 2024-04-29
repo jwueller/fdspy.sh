@@ -102,7 +102,9 @@ fdspy 1337 -x posix
 
 ## Versioning
 
-This project uses [Semantic Versioning](https://semver.org/), so you can expect a new release to indicate backwards-incompatible changes with a new major version number, although those will be avoided if at all possible. Documentation, test or formatting changes without user-facing impact will not trigger a new version.
+This project uses [Semantic Versioning](https://semver.org/), so you can expect a new release to indicate backwards-incompatible changes with a new major version number, although those will be avoided if at all possible.
+
+Changes that don't affect user-visible behavior (e.g. documentation, tests, etc.) will not trigger a new version. Please note though that stderr status messages are not considered stable and may vary between minor versions.
 
 ## License
 
