@@ -595,7 +595,8 @@ fdspy() {
   #
 
   if [ -n "$_dry_run" ] || [ "$_verbosity" -gt 0 ]; then
-    echo "fdspy: $_strace" >&2
+    # Emulate xtrace format.
+    echo "+ $_strace" >&2
   fi
 
   if [ -z "$_dry_run" ]; then
