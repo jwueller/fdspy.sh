@@ -53,7 +53,7 @@ General options:
   --version        Show version information and exit; displays only the number
                    if --quiet.
   --dry-run        Print commands without executing them, also enables via
-                   FDSPY_DRY_RUN environment variable.
+                   DRY_RUN environment variable.
   --               Marks the end of options and the start of PIDs and suppresses
                    errors when no PIDs are specified. Recommended for use with
                    tools like pidof/pgrep for dynamic process selection.
@@ -295,7 +295,8 @@ fdspy() {
   # Positive is more verbose, negative is less verbose.
   _verbosity=0
 
-  _dry_run="$FDSPY_DRY_RUN"
+  # FDSPY_DRY_RUN is accepted for backwards compatibility!
+  _dry_run="${FDSPY_DRY_RUN:-${DRY_RUN}}"
   _ignore_forks=
   _version_requested=
   _help_requested=
