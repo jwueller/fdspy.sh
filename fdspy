@@ -124,9 +124,8 @@ There is NO WARRANTY, to the extent permitted by law.
 "
 }
 
-# Unfortunately, `sh` does not provide a decent way to build a command that
-# natively preserves paths in their entirety, so we have to fall back on
-# quoting those.
+# Unfortunately, POSIX `sh` does not provide a native way to escape strings for
+# use in shell commands, so we have to fall back on quoting those.
 fdspy_quote_argument() {
   printf "'"
   printf "%s" "$1" | sed "s/'/'\\\\''/g"
