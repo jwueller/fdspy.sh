@@ -377,9 +377,7 @@ fdspy() {
 
       --fd)
         shift
-        if ! _add_fds "$1"; then
-          return
-        fi
+        _add_fds "$1" || return
         shift
         ;;
 
@@ -400,9 +398,7 @@ fdspy() {
 
       --path)
         shift
-        if ! _add_path "$1"; then
-          return
-        fi
+        _add_path "$1" || return
         shift
         ;;
 
@@ -488,9 +484,7 @@ fdspy() {
 
       *)
         # assume positional
-        if ! _add_pids "$1"; then
-          return
-        fi
+        _add_pids "$1" || return
         shift
         ;;
     esac
@@ -498,9 +492,7 @@ fdspy() {
 
   # Handle remaining positional arguments.
   while [ "$#" -gt 0 ]; do
-    if ! _add_pids "$1"; then
-      return
-    fi
+    _add_pids "$1" || return
     shift
   done
 
