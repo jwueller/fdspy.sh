@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; If not, see <http://www.gnu.org/licenses/>.
 
-FDSPY_VERSION="0.2.8"
+FDSPY_VERSION="0.2.8-dev"
 
 # This is mostly based on the Google Shell Style Guide.
 # See: https://google.github.io/styleguide/shellguide.html
