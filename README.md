@@ -22,7 +22,7 @@ File descriptors are non-negative integers that represent open files, sockets, o
 To use `fdspy`, just download the [latest release](https://github.com/jwueller/fdspy.sh/releases/latest) to where you want it, then make it executable:
 
 ```sh
-sudo curl -o /usr/local/bin/fdspy https://github.com/jwueller/fdspy.sh/releases/latest/download/fdspy
+sudo curl -Lo /usr/local/bin/fdspy https://github.com/jwueller/fdspy.sh/releases/latest/download/fdspy
 sudo chmod +x /usr/local/bin/fdspy
 ```
 
