@@ -12,6 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:  
-      - uses: actions/checkout@v3
-      - run: sudo apt install -y make shellspec
+      - uses: actions/checkout@v4
+      - name: Install ShellSpec
+        run: curl -fsSL https://git.io/shellspec | sh -s -- --yes
       - run: make test
