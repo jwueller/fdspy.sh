@@ -1,0 +1,17 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:  
+      - uses: actions/checkout@v3
+      - run: sudo apt install -y make shellspec
+      - run: make test
